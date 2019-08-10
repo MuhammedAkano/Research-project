@@ -1,0 +1,1949 @@
+---
+title: "Improving economic growth prediction using a hybrid of kmeans clustering, regression and classification algorithms"
+output: html_notebook
+---
+
+
+```{r}
+#load the data
+Datum =  read.csv("Datum_Completecopy.csv")
+
+#View the structure of the Data
+str(Datum)
+
+#get the descriptive statistics of the data
+summary(Datum)
+library(psych)
+psych::describe(Datum[-c(1,2)])
+
+#lets explore our dependent variable GDP
+library(tidyverse)
+
+# are there negative values
+neg = apply(Datum[70], 1, function(row) any (row < 0))
+length(which(neg))
+
+#no negative values, plot histogram
+ggplot(data = Datum) +
+  geom_histogram(mapping = aes(x = GDP), binwidth = 1000)
+
+#check the range of values 
+Datum %>% 
+  count(cut_width(abs(GDP), 1000))
+
+#The data is quite big, lets check the smaller range less than 1000 and greater than 1000
+DatumRange <- Datum %>% 
+  filter( GDP < 1500)
+  
+ggplot(data = DatumRange, mapping = aes(x = GDP)) +
+  geom_histogram(binwidth = 20)
+
+DatumRange2 <- Datum %>% 
+  filter( GDP > 1000)
+ggplot(data = DatumRange2, mapping = aes(x = GDP)) +
+  geom_histogram(binwidth = 500)
+
+#lets see if there are presence of subgroups
+ggplot(data = DatumRange, mapping = aes(x = GDP)) +
+  geom_histogram(binwidth = 20)
+
+#Are there unusual values outliers using cooks distance
+library("outliers")
+CD = lm(GDP ~., data = Datum)
+CDist = cooks.distance(CD)
+
+#lets visualize it
+plot(CDist, pch="*", cex=2, main="Influential Obs by Cooks distance", ylim = c(-500,50000))
+
+#None to worry about. lets check further
+library(outliers)
+outlier(Datum$GDP)
+
+#only value 18607.3 lets check the row name
+outlierrr = apply(Datum[70], 1, function(row) any (row == 18607.3))
+which(outlierrr) #row 1699
+ Datum[1699,] #chile 2015
+
+ #since its just one scaling and normalization will see to that
+ 
+```
+-Missing values present without checks. 
+-subgroups present with clusters 
+-no outliers just to worry about just chile 2015
+-All are numeric and integer. 
+-Country and year column are not necessary
+```{r}
+#Check and Handle Missing values
+sum(is.na(xDatum))
+```
+- Missing Values 36576 out of 203500 observations
+ 
+```{r}
+#Visualize the Missingness
+missmap(xDatum, main = "Missing values", col= c('light blue', 'Blue'), x.cex = 0.65)
+#view the data
+head(Datum)
+tail(Datum)
+
+```
+
+- presence of 0's. we represent all 0's as NA.
+
+```{r}
+#Replace all zeros with NA
+Datum[Datum == 0] = NA
+```
+Done ....
+```{r}
+#Now check for the Missingness
+sum(is.na(Datum))
+```
+- missing value 69084
+```{r}
+#Visualize the Missingness
+library(Amelia)
+missmap(Datum, main = "Missing values", col= c('light blue', 'Blue'), x.cex = 0.65)
+```
+- 31% of the data are missing which is a little bit on the high side as a threshold of 25% is advised.
+```{r}
+#lets remove  that have more than 50% missing values
+NewDatum = Datum[, -which(colMeans(is.na(Datum)) > 0.5)]
+```
+- 87 variables from 121 variables. Removing variables with more than 50% missingness is standard in literature
+```{r}
+#View the new missing values
+sum(is.na(NewDatum))
+```
+- Missing values 27509
+```{r}
+#Visualize the Missingness
+missmap(NewDatum, main = "Missing values", col= c('light blue', 'Blue'), x.cex = 0.65)
+```
+
+- Eureka.... we are good to go with 17% of the data missing. lets normalize the numeric values.
+```{r}
+#Remove Country and Date column
+Scaled_NewDatum = NewDatum[-1:-2]
+
+#Normalize the values
+Scaled_NewDatum = scale(Scaled_NewDatum)
+```
+Done scaling. Next is to impute missing values using MICE
+```{r}
+#Input the missing values using random forest in mice
+library("mice")
+Real_Datum = mice(Scaled_NewDatum, m=5, maxit = 50, meth='rf', seed=500)
+```
+It took 4 hours to run but it was worth the wait.
+
+```{r}
+#Complete imputation
+Real_Datum = complete(Real_Datum)
+
+#View the missing values
+sum(is.na(Real_Datum))
+```
+- 0 missing values
+
+```{r}
+set.seed(123)
+library("animation")
+
+#remove GDP
+which(names(Real_Datum) == 'GNI')
+#59
+Real_DatumX = Real_Datum[-59,58]
+
+#save the data into a file
+write.csv(Real_DatumX, "DatumImputed.csv")
+
+#so you dont have to run MICE everytime
+Real_DatumX = read.csv("DatumImputed.csv")
+
+#choosing the optimal k for kmeans
+Datum_withinss <- function(k) {
+    cluster <- kmeans(Real_DatumX, k)
+    return (cluster$tot.withinss)
+}
+#maximum cluster of 20
+max_k = 20
+
+#run kmeans over a range of 2 to 20 times
+wss <- sapply(2:max_k, Datum_withinss)
+
+#create a data frame to plot the elbow graph
+Real_DatumElbow = data.frame(2:max_k, wss)
+
+#Visualize the elbow
+ggplot(Real_DatumElbow, aes(x = X2.max_k, y = wss)) +
+    geom_point() +
+    geom_line() +
+    scale_x_continuous(breaks = seq(1, 20, by = 1))
+```
+-cluster 4,8 looks like the good cluster 
+-is it the income level and geographical location by worldbank
+```{r}
+#checking the labels of each cluster
+table(data.frame(NewDatum$Country,Real_DatumClusters$cluster))
+
+#The best k 
+set.seed(123)
+library("caret")
+calculate.confusion <- function(Countrys, clusters)
+{
+  # generate a confusion matrix of clusters versus countrys
+  d <- data.frame(Country = Countrys, cluster = clusters)
+  td <- as.data.frame(table(d))
+  # convert from raw counts to percentage of each label
+  pc <- matrix(ncol=max(clusters),nrow=0) # k cols
+  for (i in 1:185) # 185 countries
+  {
+    total <- sum(td[td$Country==td$Country[i],3])
+    pc <- rbind(pc, td[td$Country==td$Country[i],3]/total)
+  }
+  rownames(pc) <- td[1:185,1]
+  return(pc)
+}
+results <- matrix(ncol=2, nrow=0)
+models <- list()
+
+assign.cluster.labels <- function(cm, k)
+{
+  # take the cluster label from the highest percentage in that column
+  cluster.labels <- list()
+  for (i in 1:k)
+  {
+    cluster.labels <- rbind(cluster.labels, row.names(cm)[match(max(cm[,i]), cm[,i])])
+  }
+
+  # this may still miss some labels but all labels are included
+  for (l in rownames(cm)) 
+  { 
+    if (!(l %in% cluster.labels)) 
+    { 
+      cluster.number <- match(max(cm[l,]), cm[l,])
+      cluster.labels[[cluster.number]]= c(cluster.labels[[cluster.number]], l)
+    } 
+  }
+  return(cluster.labels)
+}
+
+#accuracy
+calculate.accuracy <- function(Countrys, clabels)
+{
+  matching <- Map(function(Country, labels) { Country %in% labels }, Countrys, clabels)
+  tf <- unlist(matching, use.names=FALSE)
+  return (sum(tf)/length(tf))
+}
+
+#run kmeans on the new range
+#import row labels first
+CountryData = read.csv("CountryData.csv")
+for (k in 4:20)
+{
+ 
+  means <- kmeans(Real_DatumX, k)
+  
+  # generate a confusion matrix of cols C versus states S
+  conf.mat <- calculate.confusion(NewDatum$Country, means$cluster)
+ cluster.labels <- assign.cluster.labels(conf.mat, k)
+
+  # Now calculate accuracy, using states and groups of labels for each cluster
+  accuracy <- calculate.accuracy(CountryData$Country, cluster.labels[means$cluster])
+  results <- rbind(results, c(k, accuracy))
+  models[[(length(models)+1)]] <- means
+}
+colnames(results) = c("cluster","accuracy")
+results = as.data.frame(results)
+results[ order(results$accuracy, decreasing = TRUE), ]
+
+
+```
+- The best cluster is 4 clusters followed by cluster 10 then cluster 7
+```{r}
+#lets look for the best cluster in all of the  clusters
+best.row <- match(max(results[,2]), results[,2])
+best.kmeans <- models[[best.row]]
+#save it
+basedir ="/Users/macbook/Documents/Thesis"
+save(best.kmeans, file=paste0(basedir, "kmeans.obj"))
+
+#scope it more
+k <- length(best.kmeans$size)
+conf.mat <- calculate.confusion(NewDatum$Country, best.kmeans$cluster)
+cluster.labels <- assign.cluster.labels(conf.mat, k)
+acc <- calculate.accuracy(NewDatum$Country, cluster.labels[best.kmeans$cluster])
+cat("Best:", k, "means with accuracy", acc)
+
+```
+- Best: 4 means with accuracy 0.8497297
+
+```{r}
+#4 clusters for kmeans
+Real_DatumClusters = kmeans(Real_DatumX, 4)
+
+#evaluate the kmeans
+Real_DatumClusters$size
+
+#Check for the centre
+centre = Real_DatumClusters$cluster
+
+#Visualize the clusters
+library("factoextra")
+fviz_cluster(Real_DatumClusters,Real_DatumX)
+```
+- divided into 413,482,437,518
+```{r}
+#Naming the clusters
+cat(str(cluster.labels))
+
+#unlist the list
+Naming = unlist(cluster.labels)
+#duplicated
+Naming[duplicated(Naming)]
+#remove duplicated row
+ NamingD = Naming[!duplicated(Naming)]
+ NamingD = as.data.frame(NamingD)
+ #remove whitespaces
+ NamindDW = apply(NamingD,2,function(x)gsub('\\s+', '',x))
+
+#attach to their initial labels
+Name1 = NamindDW[1:24]
+Name2 = NamindDW[25:66]
+Name3 = NamindDW[67:130]
+Name4 = NamindDW[131:185]
+
+
+
+#convert to dataframe
+Name1 = as.data.frame(Name1)
+Name2 = as.data.frame(Name2)
+Name3 = as.data.frame(Name3)
+Name4 = as.data.frame(Name4)
+
+
+#classification by worldbank in 2015
+CatIncome = read.csv("Category.csv")
+CatIncome = as.data.frame(CatIncome)
+
+#select only countries in our dataset
+names(Name1) = "Country"
+names(Name2) = "Country"
+names(Name3) = "Country"
+names(Name4) = "Country"
+
+#Extract categories
+library(plyr)
+JName1 = join(CatIncome,Name1,by=('Country'), type = "right")
+JName2 = join(CatIncome,Name2,by=('Country'), type = "right")
+JName3 = join(CatIncome,Name3,by=('Country'), type = "right")
+JName4 = join(CatIncome,Name4,by=('Country'), type = "right")
+
+#check missing values
+sum(is.na(JName1))
+sum(is.na(JName2))
+sum(is.na(JName3))
+sum(is.na(JName4))
+
+#Input values in JName1 and Jname3
+which(is.na(JName1$Category))
+JName1$Category[c(3)] = "LowerMiddle_Income"
+
+#remove others
+JName1 = na.omit(JName1)
+JName3 = na.omit(JName3)
+#percentage correct
+PercentName1 =c( (length(which(JName1$Category == "Low_Income"))/length(JName1$Category)) * 100,(length(which(JName1$Category == "LowerMiddle_Income"))/length(JName1$Category)) * 100,(length(which(JName1$Category == "UpperMiddle_Income"))/length(JName1$Category)) * 100,(length(which(JName1$Category == "High_Income"))/length(JName1$Category)) * 100 )
+
+PercentName2 = c((length(which(JName2$Category == "Low_Income"))/length(JName2$Category)) * 100,(length(which(JName2$Category == "LowerMiddle_Income"))/length(JName2$Category)) * 100,(length(which(JName2$Category == "UpperMiddle_Income"))/length(JName2$Category)) * 100,(length(which(JName2$Category == "High_Income"))/length(JName2$Category)) * 100)
+
+PercentName3 = c((length(which(JName3$Category == "Low_Income"))/length(JName3$Category)) * 100,(length(which(JName3$Category == "LowerMiddle_Income"))/length(JName3$Category)) * 100,(length(which(JName3$Category == "UpperMiddle_Income"))/length(JName3$Category)) * 100,(length(which(JName3$Category == "High_Income"))/length(JName3$Category)) * 100)
+
+PercentName4 = c((length(which(JName4$Category == "Low_Income"))/length(JName4$Category)) * 100,(length(which(JName4$Category == "LowerMiddle_Income"))/length(JName4$Category)) * 100,(length(which(JName4$Category == "UpperMiddle_Income"))/length(JName4$Category)) * 100,(length(which(JName4$Category == "High_Income"))/length(JName4$Category)) * 100)
+PercentName2
+
+allpercent = data.frame(PercentName1,PercentName2,PercentName3,PercentName4)
+row.names(allpercent)= (c("Low Income", "lower-Middle income", "Upper-Middle Income", "High income"))
+colnames(allpercent) = (c("Cluster A", "Cluster B", "Cluster C", "Cluster D"))
+```
+-Divided them according to income level
+-Duplicated Armenia(Name1) and Australia(Name4)
+-High disparity with lowermiddle and uppermiddle because of the closeness in interval.
+-Missing values in JName4
+-Name1 - Lowermiddle Income -59.09% (9.09,59.09, 22.73,9.09)
+-Name2 - Low Income- 66.67% (66.67,30.95,2.38,0)
+-Name3 - UpperMiddle Income - 55.56% (1.59,33.33,55.56,9.52)
+-Name4 - High Income - 87.27(0,1.82,10.91,87.27)
+-Use it directly
+```{r}
+
+#put all clusters together
+ClusterDataA = Real_DatumX[Real_DatumClusters$cluster==1,]
+ClusterDataB = Real_DatumX[Real_DatumClusters$cluster==2,]
+ClusterDataC = Real_DatumX[Real_DatumClusters$cluster==3,]
+ClusterDataD = Real_DatumX[Real_DatumClusters$cluster==4,]
+
+#---------------------ClusterA------------------------------
+#check for correlation
+library(GGally)
+#install.packages("GGally")
+ggcorr(ClusterDataA, label = FALSE, size = 2, hjust = .85) +
+  ggtitle("Correlation Heatmap") +theme(plot.title = element_text(hjust = 0.5))
+
+```
+-Heatmap not clear data quality and data size
+```{r}
+library(reshape2)
+corMatrixA = cor(ClusterDataA, method = "pearson",use = "pairwise")
+
+hcA = findCorrelation(corMatrixA, cutoff=0.69)
+hcA = sort(hcA)
+reduced_DataA = ClusterDataA[,-c(hcA)]
+#remove the ones not necessary
+ClusterDataA = reduced_DataA
+
+#number of column
+length(names(ClusterDataA))
+
+```
+- 64 variables without multicollinearity in ClusterData A
+```{r}
+#ClusterDataB
+library('caret')
+library('rsample')
+library('ranger')
+library('randomForest')
+set.seed(1337)
+
+#To get the value of GDP for each cluster, we need to match the column
+ClusterDataA$GDP = Real_Datum$GDP[match(ClusterDataA$GNI,Real_Datum$GNI)]
+
+#split data
+AData_split <- initial_split(ClusterDataA, prop = .7)
+A_train <- training(AData_split)
+A_test <- testing(AData_split)
+
+#default randomforest model
+m1 <- randomForest(
+  formula = GDP ~ .,
+  data    = A_test
+)
+plot(m1)
+#number of the trees with the least error rate
+which.min(m1$mse)
+
+
+#RMSE of this optimal random forest
+sqrt(m1$mse[which.min(m1$mse)])
+
+
+```
+test sample
+-RMSE = 0.720         
+```{r}
+#lets create validation set to measure predictive accuracy
+set.seed(123)
+Avalid_split <- initial_split(A_train, .8)
+
+# training data
+A_train_v <- analysis(Avalid_split)
+
+# validation data
+A_valid <- assessment(Avalid_split)
+Ax_test <- A_valid[setdiff(names(A_valid), "GDP")]
+Ay_test <- A_valid$GDP
+
+Arf_oob_comp <- randomForest(
+  formula = GDP ~ .,
+  data    = A_train_v,
+  xtest   = Ax_test,
+  ytest   = Ay_test
+)
+
+# extract OOB & validation errors
+oobA <- sqrt(Arf_oob_comp$mse)
+validationA <- sqrt(Arf_oob_comp$test$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oobA,
+  `Test error` = validationA,
+  ntrees = 1:Brf_oob_comp$ntree
+) %>%
+  gather(Metric, RMSE, -ntrees) %>%
+  ggplot(aes(ntrees, RMSE, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+#RMSE
+sqrt(Arf_oob_comp$mse[which.min(Arf_oob_comp$mse)])
+```
+-RMSE = 0.257
+```{r}
+#lets tune our model and then predict using full grid search
+Afull_grid <- expand.grid(
+  mtry       = seq(20, 30, by = 2),
+  node_size  = seq(10, 50, by = 10),
+  sampe_size = c(.55, .632, .70, .80),
+  OOB_RMSE   = 0
+  
+)
+
+#Tune with 500 trees
+for(i in 1:nrow(Afull_grid)) {
+  
+  # train model
+  Amodel <- ranger(
+    formula         = GDP ~ ., 
+    data            = A_train, 
+    num.trees       = 500,
+    mtry            = Afull_grid$mtry[i],
+    min.node.size   = Afull_grid$node_size[i],
+    sample.fraction = Afull_grid$sampe_size[i],
+    seed            = 123
+  )
+  
+  # add OOB error to grid
+  Afull_grid$OOB_RMSE[i] <- sqrt(Amodel$prediction.error)
+}
+
+#mininum value for rmse
+which.min(Afull_grid$OOB_RMSE)
+#other values
+Afull_grid[62,]
+#visualize the error rates
+OOBA_RMSE <- vector(mode = "numeric", length = 100)
+
+for(i in seq_along(OOBA_RMSE)) {
+
+  optimal_rangerA <- ranger(
+    formula         = GDP ~ ., 
+    data            = A_train, 
+    num.trees       = 500,
+    mtry            = 22,
+    min.node.size   =10,
+    sample.fraction = .7,
+    importance      = 'impurity'
+  )
+  
+  OOBA_RMSE[i] <- sqrt(optimal_rangerA$prediction.error)
+}
+
+hist(OOBA_RMSE, breaks = 20)
+
+```
+Best Tune
+numTrees = 500
+mtry = 22
+node_size = 10
+RMSE = 0.27
+Samplesize = 0.7
+```{r}
+#Variables important for the optimum rmse
+optimal_rangerA$variable.importance %>% 
+  tidy() %>%
+  dplyr::arrange(desc(x)) %>%
+  dplyr::top_n(10) %>%
+  ggplot(aes(reorder(names, x), x)) +
+  geom_col() +
+  coord_flip() +
+  ggtitle("Top 10 important variables")
+
+#get top 10 for GLMM
+ATop10 = optimal_rangerA$variable.importance %>% 
+  tidy() %>%
+  dplyr::arrange(desc(x)) %>%
+  dplyr::top_n(10)
+```
+- Diagram
+-Top 10 
+ [1] "Lifeexpectancy_Index"                  
+ [2] "Shareofseatsinparliament.women."       
+ [3] "Homiciderate"                          
+ [4] "Maternalmortalityratio"                
+ [5] "Ruralpopulationwithaccesstoelectricity"
+ [6] "Mortality_rate"                        
+ [7] "Gross_enrolment_ratio.pre.primary."    
+ [8] "Adjustednetsavings"                    
+ [9] "Grosscapitalformation"                 
+[10] "Domestic_Credit" 
+```{r}
+#prediction with the best model
+predictionA <- predict(optimal_rangerA, A_test)
+tA =  data.frame(A_test$GDP, predictionA$predictions)
+
+#Average of actual data
+Aavr_y_actual <- mean(A_test$GDP)
+#Total sum of squares
+Ass_total <- sum((A_test$GDP - Aavr_y_actual)^2)
+#Regression sum of squares
+Ass_regression <- sum((A_test$GDP - Aavr_y_actual)^2)
+#Residual sum of squares
+Ass_residuals <- sum((A_test$GDP- predictionA$predictions)^2)
+#R2 Score
+Ar2 <- 1 - Ass_residuals / Ass_total
+Ar2
+
+
+```
+R2 = 0.0259 = 2.6% - relationship was not uniformatrributes missing values are more. realibility inconsistency
+```{r}
+#XGBoost
+library(readxl)
+library(tidyverse)
+library(xgboost)
+library(caret)
+
+#Convert train and test data to Dmatrix
+XG_train = xgb.DMatrix(as.matrix(A_train))
+yG_train = A_train$GDP
+XG_test = xgb.DMatrix(as.matrix(A_test))
+yG_test = A_test$GDP
+
+#Cross Validation for xgboost
+xgb_trcontrol = trainControl(
+  method = "repeatedcv",
+  number = 5,  
+  allowParallel = TRUE,
+  verboseIter = FALSE,
+  returnData = FALSE
+)
+
+#grid search to get the best hyper parameters
+xgbGrid <- expand.grid(nrounds = c(400,600),  
+                       max_depth = c(30, 35, 40, 50),
+                       colsample_bytree = seq(0.9, 1, length.out = 5),
+                       eta = 0.1,
+                       gamma=0,
+                       min_child_weight = 1,
+                       subsample = 1
+                      )
+#Train the model
+set.seed(1337)
+xgb_model = train(
+  XG_train, yG_train,  
+  trControl = xgb_trcontrol,
+  tuneGrid = xgbGrid,
+  method = "xgbTree"
+)
+
+#predict
+XGBpredictions = predict(xgb_model, XG_test)
+
+maeI = function(residuals){
+  mean(abs(residuals))
+} 
+
+residuals = yG_test - XGBpredictions
+
+#Evaluation using RSquare
+yG_testmean = mean(yG_test)
+# Calculate total sum of squares
+tss =  sum((yG_test - yG_testmean)^2 )
+# Calculate residual sum of squares
+rss =  sum(residuals^2)
+# Calculate R-squared
+rsq  =  1 - (rss/tss)
+#RMSE
+RMSE = sqrt(mean(residuals^2))
+#MAE
+MAE = maeI(residuals)
+
+cat('The root mean square error of the test data is ',RMSE,'\n')
+cat('The R-square of the test data is ', rsq , '\n')
+
+#Check for the best tune
+xgb_model$bestTune
+
+```
+BestTune
+RMSE - 0.51
+R2 - 0.51
+
+```{r}
+#---------------------ClusterB------------------------------
+#check for correlation
+library(GGally)
+#install.packages("GGally")
+ggcorr(ClusterDataB, label = FALSE, size = 2, hjust = .85) +
+  ggtitle("Correlation Heatmap") +theme(plot.title = element_text(hjust = 0.5))
+
+```
+-Heatmap not clear
+```{r}
+library(reshape2)
+corMatrixB = cor(ClusterDataB, method = "pearson",use = "pairwise")
+
+hcB = findCorrelation(corMatrixB, cutoff=0.69)
+hcB = sort(hcB)
+reduced_DataB = ClusterDataB[,-c(hcB)]
+#remove the ones not necessary
+ClusterDataB = reduced_DataB
+
+#number of column
+length(names(ClusterDataB))
+
+```
+- 64 variables without multicollinearity in ClusterData B
+```{r}
+#ClusterDataB
+library('caret')
+library('rsample')
+library('ranger')
+library('randomForest')
+set.seed(1337)
+
+#To get the value of GDP for each cluster, we need to match the column
+ClusterDataB$GDP = Real_Datum$GDP[match(ClusterDataB$GNI,Real_Datum$GNI)]
+
+#split data
+BData_split <- initial_split(ClusterDataB, prop = .7)
+B_train <- training(BData_split)
+B_test <- testing(BData_split)
+
+#default randomforest model
+m2 <- randomForest(
+  formula = GDP ~ .,
+  data    = B_test
+)
+plot(m2)
+#number of the trees with the least error rate
+which.min(m2$mse)
+
+#RMSE of this optimal random forest
+sqrt(m2$mse[which.min(m2$mse)])
+
+
+```
+test sample
+-RMSE = 0.91         
+```{r}
+#lets create validation set to measure predictive accuracy
+set.seed(123)
+Bvalid_split <- initial_split(B_train, .8)
+
+# training data
+B_train_v <- analysis(Bvalid_split)
+
+# validation data
+B_valid <- assessment(Bvalid_split)
+Bx_test <- B_valid[setdiff(names(B_valid), "GDP")]
+By_test <- B_valid$GDP
+
+Brf_oob_comp <- randomForest(
+  formula = GDP ~ .,
+  data    = B_train_v,
+  xtest   = Bx_test,
+  ytest   = By_test
+)
+
+# extract OOB & validation errors
+oobB <- sqrt(Brf_oob_comp$mse)
+validationB <- sqrt(Brf_oob_comp$test$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oobB,
+  `Test error` = validationB,
+  ntrees = 1:Brf_oob_comp$ntree
+) %>%
+  gather(Metric, RMSE, -ntrees) %>%
+  ggplot(aes(ntrees, RMSE, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+#RMSE
+sqrt(Brf_oob_comp$mse[which.min(Brf_oob_comp$mse)])
+```
+-RMSE = 0.67
+```{r}
+#lets tune our model and then predict using full grid search
+Bfull_grid <- expand.grid(
+  mtry       = seq(20, 30, by = 2),
+  node_size  = seq(10, 50, by = 10),
+  sampe_size = c(.55, .632, .70, .80),
+  OOB_RMSE   = 0
+  
+)
+
+#Tune with 100 to 1000 trees
+for(i in 1:nrow(Bfull_grid)) {
+  
+  # train model
+  Bmodel <- ranger(
+    formula         = GDP ~ ., 
+    data            = B_train, 
+    num.trees       = 500,
+    mtry            = Bfull_grid$mtry[i],
+    min.node.size   = Bfull_grid$node_size[i],
+    sample.fraction = Bfull_grid$sampe_size[i],
+    seed            = 123
+  )
+  
+  # add OOB error to grid
+  Bfull_grid$OOB_RMSE[i] <- sqrt(Bmodel$prediction.error)
+}
+
+#mininum value for rmse
+which.min(Bfull_grid$OOB_RMSE)
+#other values
+Bfull_grid[96,]
+#visualize the error rates
+OOBB_RMSE <- vector(mode = "numeric", length = 100)
+
+for(i in seq_along(OOBB_RMSE)) {
+
+  optimal_rangerB <- ranger(
+    formula         = GDP ~ ., 
+    data            = B_train, 
+    num.trees       = 500,
+    mtry            = 30,
+    min.node.size   =10,
+    sample.fraction = .8,
+    importance      = 'impurity'
+  )
+  
+  OOBB_RMSE[i] <- sqrt(optimal_rangerB$prediction.error)
+}
+
+hist(OOBB_RMSE, breaks = 20)
+
+```
+Best Tune
+numTrees = 500
+mtry = 28
+node_size = 10
+RMSE = 0.59
+sample size = 0.8
+```{r}
+#Variables important for the optimum rmse
+optimal_rangerB$variable.importance %>% 
+  tidy() %>%
+  dplyr::arrange(desc(x)) %>%
+  dplyr::top_n(10) %>%
+  ggplot(aes(reorder(names, x), x)) +
+  geom_col() +
+  coord_flip() +
+  ggtitle("Top 10 important variables")
+```
+- Diagram
+```{r}
+#prediction with the best model
+predictionB <- predict(optimal_rangerB, B_test)
+tB =  data.frame(B_test$GDP, predictionB$predictions)
+
+#Average of actual data
+Bavr_y_actual <- mean(B_test$GDP)
+#Total sum of squares
+Bss_total <- sum((B_test$GDP - Bavr_y_actual)^2)
+#Regression sum of squares
+Bss_regression <- sum((B_test$GDP - Bavr_y_actual)^2)
+#Residual sum of squares
+Bss_residuals <- sum((B_test$GDP- predictionB$predictions)^2)
+#R2 Score
+Br2 <- 1 - Bss_residuals / Bss_total
+Br2
+
+
+```
+R2 = 0.780 = 78.0%
+```{r}
+#XGBoost
+
+#Convert train and test data to Dmatrix
+BXG_train = xgb.DMatrix(as.matrix(B_train))
+ByG_train = B_train$GDP
+BXG_test = xgb.DMatrix(as.matrix(B_test))
+ByG_test = B_test$GDP
+
+#Cross Validation for xgboost
+Bxgb_trcontrol = trainControl(
+  method = "repeatedcv",
+  number = 5,  
+  allowParallel = TRUE,
+  verboseIter = FALSE,
+  returnData = FALSE
+)
+
+#grid search to get the best hyper parameters
+BxgbGrid <- expand.grid(nrounds = c(400,600),  
+                       max_depth = c(30, 35, 40, 50),
+                       colsample_bytree = seq(0.9, 1, length.out = 5),
+                       eta = 0.1,
+                       gamma=0,
+                       min_child_weight = 1,
+                       subsample = 1
+                      )
+#Train the model
+set.seed(1337)
+Bxgb_model = train(
+  BXG_train, ByG_train,  
+  trControl = Bxgb_trcontrol,
+  tuneGrid = BxgbGrid,
+  method = "xgbTree"
+)
+
+#predict
+BXGBpredictions = predict(Bxgb_model, BXG_test)
+
+BmaeI = function(Bresiduals){
+  mean(abs(Bresiduals))
+} 
+
+Bresiduals = ByG_test - BXGBpredictions
+
+#Evaluation using RSquare
+ByG_testmean = mean(ByG_test)
+# Calculate total sum of squares
+Btss =  sum((ByG_test - ByG_testmean)^2 )
+# Calculate residual sum of squares
+Brss =  sum(Bresiduals^2)
+# Calculate R-squared
+Brsq  =  1 - (Brss/Btss)
+#RMSE
+BRMSE = sqrt(mean(Bresiduals^2))
+#MAE
+BMAE = BmaeI(Bresiduals)
+
+cat('The root mean square error of the test data is ',BRMSE,'\n')
+cat('The R-square of the test data is ', Brsq , '\n')
+
+#Check for the best tune
+Bxgb_model$bestTune
+
+```
+BestTune
+RMSE - 0.089
+R2 - 0.989
+```{r}
+#---------------------ClusterC------------------------------
+#check for correlation
+library(GGally)
+#install.packages("GGally")
+ggcorr(ClusterDataC, label = FALSE, size = 2, hjust = .85) +
+  ggtitle("Correlation Heatmap") +theme(plot.title = element_text(hjust = 0.5))
+
+```
+-Heatmap not clear
+```{r}
+corMatrixC = cor(ClusterDataC, method = "pearson",use = "pairwise")
+
+hcC = findCorrelation(corMatrixC, cutoff=0.69)
+hcC = sort(hcC)
+reduced_DataC = ClusterDataC[,-c(hcC)]
+#remove the ones not necessary
+ClusterDataC = reduced_DataC
+
+#number of column
+length(names(ClusterDataC))
+
+```
+- 64 variables without multicollinearity in ClusterDataC
+```{r}
+#ClusterDataC
+set.seed(1337)
+
+#To get the value of GDP for each cluster, we need to match the column
+ClusterDataC$GDP = Real_Datum$GDP[match(ClusterDataC$GNI,Real_Datum$GNI)]
+
+#split data
+CData_split <- initial_split(ClusterDataC, prop = .7)
+C_train <- training(CData_split)
+C_test <- testing(CData_split)
+
+#default randomforest model
+m3 <- randomForest(
+  formula = GDP ~ .,
+  data    = C_test
+)
+plot(m3)
+#number of the trees with the least error rate
+which.min(m3$mse)
+
+#RMSE of this optimal random forest
+sqrt(m3$mse[which.min(m3$mse)])
+
+
+```
+test sample
+-RMSE = 0.27        
+```{r}
+#lets create validation set to measure predictive accuracy
+set.seed(123)
+Cvalid_split <- initial_split(C_train, .8)
+
+# training data
+C_train_v <- analysis(Cvalid_split)
+
+# validation data
+C_valid <- assessment(Cvalid_split)
+Cx_test <- C_valid[setdiff(names(C_valid), "GDP")]
+Cy_test <- C_valid$GDP
+
+Crf_oob_comp <- randomForest(
+  formula = GDP ~ .,
+  data    = C_train_v,
+  xtest   = Cx_test,
+  ytest   = Cy_test
+)
+
+# extract OOB & validation errors
+oobC <- sqrt(Crf_oob_comp$mse)
+validationC <- sqrt(Crf_oob_comp$test$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oobC,
+  `Test error` = validationC,
+  ntrees = 1:Crf_oob_comp$ntree
+) %>%
+  gather(Metric, RMSE, -ntrees) %>%
+  ggplot(aes(ntrees, RMSE, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+#RMSE
+sqrt(Crf_oob_comp$mse[which.min(Crf_oob_comp$mse)])
+```
+
+-RMSE = 0.27
+```{r}
+#lets tune our model and then predict using full grid search
+Cfull_grid <- expand.grid(
+  mtry       = seq(20, 30, by = 2),
+  node_size  = seq(10, 50, by = 10),
+  sampe_size = c(.55, .632, .70, .80),
+  OOB_RMSE   = 0
+  
+)
+
+#Tune with 500 trees
+for(i in 1:nrow(Cfull_grid)) {
+  
+  # train model
+  Cmodel <- ranger(
+    formula         = GDP ~ ., 
+    data            = C_train, 
+    num.trees       = 500,
+    mtry            = Cfull_grid$mtry[i],
+    min.node.size   = Cfull_grid$node_size[i],
+    sample.fraction = Cfull_grid$sampe_size[i],
+    seed            = 123
+  )
+  
+  # add OOB error to grid
+  Cfull_grid$OOB_RMSE[i] <- sqrt(Cmodel$prediction.error)
+}
+
+#mininum value for rmse
+which.min(Cfull_grid$OOB_RMSE)
+#other values
+Cfull_grid[91,]
+#visualize the error rates
+OOBC_RMSE <- vector(mode = "numeric", length = 100)
+
+for(i in seq_along(OOBC_RMSE)) {
+
+  optimal_rangerC <- ranger(
+    formula         = GDP ~ ., 
+    data            = C_train, 
+    num.trees       = 500,
+    mtry            = 20,
+    min.node.size   =10,
+    sample.fraction = .8,
+    importance      = 'impurity'
+  )
+  
+  OOBC_RMSE[i] <- sqrt(optimal_rangerC$prediction.error)
+}
+
+hist(OOBC_RMSE, breaks = 20)
+
+```
+Best Tune
+numTrees = 500
+mtry = 20
+node_size = 10
+RMSE = 0.27
+```{r}
+#Variables important for the optimum rmse
+optimal_rangerC$variable.importance %>% 
+  tidy() %>%
+  dplyr::arrange(desc(x)) %>%
+  dplyr::top_n(10) %>%
+  ggplot(aes(reorder(names, x), x)) +
+  geom_col() +
+  coord_flip() +
+  ggtitle("Top 10 important variables")
+```
+- Diagram
+```{r}
+
+#prediction with the best model
+predictionC <- predict(optimal_rangerC, C_test)
+t =  data.frame(C_test$GDP, predictionC$predictions)
+
+#Average of actual data
+Cavr_y_actual <- mean(C_test$GDP)
+#Total sum of squares
+Css_total <- sum((C_test$GDP - Cavr_y_actual)^2)
+#Regression sum of squares
+Css_regression <- sum((C_test$GDP - Cavr_y_actual)^2)
+#Residual sum of squares
+Css_residuals <- sum((C_test$GDP- predictionC$predictions)^2)
+#R2 Score
+Cr2 <- 1 - Css_residuals / Css_total
+Cr2
+
+
+```
+R2 = 0.395= 39.5%
+
+```{r}
+#XGBoost
+
+#Convert train and test data to Dmatrix
+CXG_train = xgb.DMatrix(as.matrix(C_train))
+CyG_train = C_train$GDP
+CXG_test = xgb.DMatrix(as.matrix(C_test))
+CyG_test = C_test$GDP
+
+#Cross Validation for xgboost
+Cxgb_trcontrol = trainControl(
+  method = "repeatedcv",
+  number = 5,  
+  allowParallel = TRUE,
+  verboseIter = FALSE,
+  returnData = FALSE
+)
+
+
+#grid search to get the best hyper parameters
+CxgbGrid <- expand.grid(nrounds = c(400,600),  
+                       max_depth = c(30, 35, 40, 50),
+                       colsample_bytree = seq(0.9, 1, length.out = 5),
+                       eta = 0.1,
+                       gamma=0,
+                       min_child_weight = 1,
+                       subsample = 1
+                      )
+#Train the model
+set.seed(1337)
+Cxgb_model = train(
+  CXG_train, CyG_train,  
+  trControl = Cxgb_trcontrol,
+  tuneGrid = CxgbGrid,
+  method = "xgbTree"
+)
+
+#predict
+CXGBpredictions = predict(Cxgb_model, CXG_test)
+
+CmaeI = function(Cresiduals){
+  mean(abs(Cresiduals))
+} 
+
+Cresiduals = CyG_test - CXGBpredictions
+
+#Evaluation using RSquare
+CyG_testmean = mean(CyG_test)
+# Calculate total sum of squares
+Ctss =  sum((CyG_test - CyG_testmean)^2 )
+# Calculate residual sum of squares
+Crss =  sum(Cresiduals^2)
+# Calculate R-squared
+Crsq  =  1 - (Crss/Ctss)
+#RMSE
+CRMSE = sqrt(mean(Cresiduals^2))
+#MAE
+CMAE = CmaeI(Cresiduals)
+
+cat('The root mean square error of the test data is ',CRMSE,'\n')
+cat('The R-square of the test data is ', Crsq , '\n')
+
+#Check for the best tune
+Cxgb_model$bestTune
+
+```
+BestTune
+RMSE - 0.052
+R2 - 0.983
+```{r}
+#---------------------ClusterD------------------------------
+#check for correlation
+library(GGally)
+#install.packages("GGally")
+ggcorr(ClusterDataD, label = FALSE, size = 2, hjust = .85) +
+  ggtitle("Correlation Heatmap") +theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+-Heatmap not clear
+
+```{r}
+corMatrixD = cor(ClusterDataD, method = "pearson",use = "pairwise")
+
+hcD = findCorrelation(corMatrixD, cutoff=0.69)
+hcD = sort(hcD)
+reduced_DataD = ClusterDataD[,-c(hcD)]
+#remove the ones not necessary
+ClusterDataD = reduced_DataD
+
+#number of column
+length(names(ClusterDataD))
+
+```
+- 64 variables without multicollinearity in ClusterDataD
+
+```{r}
+#ClusterDataD
+set.seed(1337)
+
+#To get the value of GDP for each cluster, we need to match the column
+ClusterDataD$GDP = Real_Datum$GDP[match(ClusterDataD$GNI,Real_Datum$GNI)]
+
+#split data
+DData_split <- initial_split(ClusterDataD, prop = .7)
+D_train <- training(DData_split)
+D_test <- testing(DData_split)
+
+#default randomforest model
+m4 <- randomForest(
+  formula = GDP ~ .,
+  data    = D_test
+)
+plot(m4)
+#number of the trees with the least error rate
+which.min(m4$mse)
+
+#RMSE of this optimal random forest
+sqrt(m4$mse[which.min(m4$mse)])
+
+
+```
+test sample
+-RMSE = 0.98       
+```{r}
+#lets create validation set to measure predictive accuracy
+set.seed(123)
+Dvalid_split <- initial_split(D_train, .8)
+
+# training data
+D_train_v <- analysis(Dvalid_split)
+
+# validation data
+D_valid <- assessment(Dvalid_split)
+Dx_test <- D_valid[setdiff(names(D_valid), "GDP")]
+Dy_test <- D_valid$GDP
+
+Drf_oob_comp <- randomForest(
+  formula = GDP ~ .,
+  data    = D_train_v,
+  xtest   = Dx_test,
+  ytest   = Dy_test
+)
+
+# extract OOB & validation errors
+oobD <- sqrt(Drf_oob_comp$mse)
+validationD <- sqrt(Drf_oob_comp$test$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oobD,
+  `Test error` = validationD,
+  ntrees = 1:Crf_oob_comp$ntree
+) %>%
+  gather(Metric, RMSE, -ntrees) %>%
+  ggplot(aes(ntrees, RMSE, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+#RMSE
+sqrt(Drf_oob_comp$mse[which.min(Drf_oob_comp$mse)])
+```
+
+-RMSE = 1.1
+```{r}
+#lets tune our model and then predict using full grid search
+Dfull_grid <- expand.grid(
+  mtry       = seq(20, 30, by = 2),
+  node_size  = seq(10, 50, by = 10),
+  sampe_size = c(.55, .632, .70, .80),
+  OOB_RMSE   = 0
+  
+)
+
+#Tune with 500 trees
+for(i in 1:nrow(Dfull_grid)) {
+  
+  # train model
+  Dmodel <- ranger(
+    formula         = GDP ~ ., 
+    data            = D_train, 
+    num.trees       = 500,
+    mtry            = Dfull_grid$mtry[i],
+    min.node.size   = Dfull_grid$node_size[i],
+    sample.fraction = Dfull_grid$sampe_size[i],
+    seed            = 123
+  )
+  
+  # add OOB error to grid
+  Dfull_grid$OOB_RMSE[i] <- sqrt(Dmodel$prediction.error)
+}
+
+#mininum value for rmse
+which.min(Dfull_grid$OOB_RMSE)
+#other values
+Dfull_grid[91,]
+#visualize the error rates
+OOBD_RMSE <- vector(mode = "numeric", length = 100)
+
+for(i in seq_along(OOBD_RMSE)) {
+
+  optimal_rangerD <- ranger(
+    formula         = GDP ~ ., 
+    data            = D_train, 
+    num.trees       = 500,
+    mtry            = 20,
+    min.node.size   =10,
+    sample.fraction = .8,
+    importance      = 'impurity'
+  )
+  
+  OOBD_RMSE[i] <- sqrt(optimal_rangerD$prediction.error)
+}
+
+hist(OOBD_RMSE, breaks = 20)
+
+```
+Best Tune
+numTrees = 500
+mtry = 20
+node_size = 10
+RMSE = 1.01
+samplesize = 0.8
+```{r}
+#Variables important for the optimum rmse
+optimal_rangerD$variable.importance %>% 
+  tidy() %>%
+  dplyr::arrange(desc(x)) %>%
+  dplyr::top_n(10) %>%
+  ggplot(aes(reorder(names, x), x)) +
+  geom_col() +
+  coord_flip() +
+  ggtitle("Top 10 important variables")
+```
+- Diagram
+```{r}
+#prediction with the best model
+predictionD <- predict(optimal_rangerD, D_test)
+tD =  data.frame(D_test$GDP, predictionD$predictions)
+
+#Average of actual data
+Davr_y_actual <- mean(D_test$GDP)
+#Total sum of squares
+Dss_total <- sum((D_test$GDP - Davr_y_actual)^2)
+#Regression sum of squares
+Dss_regression <- sum((D_test$GDP - Davr_y_actual)^2)
+#Residual sum of squares
+Dss_residuals <- sum((D_test$GDP- predictionD$predictions)^2)
+#R2 Score
+Dr2 <- 1 - Dss_residuals / Dss_total
+Dr2
+
+
+```
+R2 = 0.66
+
+```{r}
+#XGBoost
+#Convert train and test data to Dmatrix
+DXG_train = xgb.DMatrix(as.matrix(D_train))
+DyG_train = D_train$GDP
+DXG_test = xgb.DMatrix(as.matrix(D_test))
+DyG_test = D_test$GDP
+
+#Cross Validation for xgboost
+Dxgb_trcontrol = trainControl(
+  method = "repeatedcv",
+  number = 5,  
+  allowParallel = TRUE,
+  verboseIter = FALSE,
+  returnData = FALSE
+)
+
+
+#grid search to get the best hyper parameters
+DxgbGrid <- expand.grid(nrounds = c(400,600),  
+                       max_depth = c(30, 35, 40, 50),
+                       colsample_bytree = seq(0.9, 1, length.out = 5),
+                       eta = 0.1,
+                       gamma=0,
+                       min_child_weight = 1,
+                       subsample = 1
+                      )
+#Train the model
+set.seed(1337)
+Dxgb_model = train(
+  DXG_train, DyG_train,  
+  trControl = Dxgb_trcontrol,
+  tuneGrid = DxgbGrid,
+  method = "xgbTree"
+)
+
+#predict
+DXGBpredictions = predict(Dxgb_model, DXG_test)
+
+DmaeI = function(Dresiduals){
+  mean(abs(Dresiduals))
+} 
+
+Dresiduals = DyG_test - DXGBpredictions
+
+#Evaluation using RSquare
+DyG_testmean = mean(DyG_test)
+# Calculate total sum of squares
+Dtss =  sum((DyG_test - DyG_testmean)^2 )
+# Calculate residual sum of squares
+Drss =  sum(Dresiduals^2)
+# Calculate R-squared
+Drsq  =  1 - (Drss/Dtss)
+#RMSE
+DRMSE = sqrt(mean(Dresiduals^2))
+#MAE
+DMAE = DmaeI(Dresiduals)
+
+cat('The root mean square error of the test data is ',DRMSE,'\n')
+cat('The R-square of the test data is ', Drsq , '\n')
+
+#Check for the best tune
+Dxgb_model$bestTune
+
+```
+BestTune
+RMSE - 0.19
+R2 - 0.979
+
+```{r}
+#-------------Classification----------------
+#Bin GDP according to worldbank values then classify using 5 algorithms
+
+#summary of GDP
+summary(Real_Datum$GDP)
+DatumC = read.csv("Datum.csv")
+#Bin
+DatumC$Bin = cut(DatumC$GDP, 
+              breaks = c(-Inf,0,5.64,Inf),
+              labels = c("Low","Middle","High"),
+              right = FALSE)
+
+#Remove GDP and Country cloumn from the dataset
+which(names(DatumC) == "GDP")
+DatumCc = DatumC[c(-59)]
+
+```
+-GDP max 11.28 min - -0.29
+-Divide into 3 -inf,0,5.64,1nf
+```{r}
+#visualize
+#lets create year column
+DatumC = append(DatumC,list(Year = ""), after = 1)
+DatumC$Year[1:185] = 1990
+DatumC$Year[186:370] = 1995
+DatumC$Year[371:555] = 2000
+DatumC$Year[556:740] = 2005
+DatumC$Year[741:925] = 2010
+DatumC$Year[926:1110] = 2011
+DatumC$Year[1111:1295] = 2012
+DatumC$Year[1296:1480] = 2013
+DatumC$Year[1481:1665] = 2014
+DatumC$Year[1666:1850] = 2015
+library(scales)
+ggplot(DatumC,aes(x=GDP,y=Year, colour =Bin ))+geom_point()+
+    geom_smooth(method="lm",alpha=0.3)+
+    scale_x_continuous(oob=squish)
+summary(DatumC$GDP)
+   
+```
+-Diagram
+-imbalance observed
+```{r }
+#check for Imbalance
+d = table(DatumCc$Bin)
+barplot(d)
+str(DatumCc$Bin)
+#Excerpt to make the column balance 
+library(ModelMetrics)
+library(UBL)
+i <- createDataPartition(DatumCc$Bin, p = 3/4,list = FALSE)
+new_train_pre <- DatumCc[i,]
+new_test_pre <- DatumCc[-i,]
+#(Both)
+new_trainS <-SmoteClassif(Bin~.,new_train_pre,C.perc="balance")
+new_testS <- SmoteClassif(Bin~.,new_test_pre,C.perc="balance")
+#(oversampling the lesser classes)
+new_trainO <-SmoteClassif(Bin~.,new_train_pre,C.perc=list(Low = 1, Middle = 4, High =50))
+new_testO <- SmoteClassif(Bin~.,new_test_pre,C.perc=list(Low = 1, Middle = 1, High = 1))
+
+#checking the proportion of classes before and after SMOTE
+prop.table(table(new_train_pre$Bin)) # L-83.5%, M - 0.15%, H - 0.009%
+prop.table(table(DatumCc$Bin))# L-83.5%, M - 0.15%, H - 0.009%
+
+prop.table(table(new_trainS$Bin)) #L-33.4%, M -33.3%, H - 33.3%
+prop.table(table(new_testS$Bin)) #L-33.4%, M -33.3%, H - 33.3%
+
+prop.table(table(new_trainO$Bin)) #L-44.2%, M -33.0%, H - 22.8%
+prop.table(table(new_testO$Bin)) #L-44.2%, M -33.0%, H - 22.8%
+e = barplot(table(new_trainS$Bin))
+f = barplot(table(new_trainO$Bin))
+```
+
+- Both L-33.4%, M -33.3%, H - 33.3%
+-Oversampling L 44.2% M33.0% H 22.8%
+
+```{r}
+#RandomForest
+library('caret')
+library('rsample')
+library('randomForest')
+set.seed(1337)
+index <- createDataPartition(DatumCc$Bin, p = 0.7, list = FALSE)
+trainData <- DatumCc[index, ]
+testData  <- DatumCc[-index, ]
+#rf model for imbalanced data
+Cl.rf <- randomForest(Bin~., data = trainData)
+
+#predict
+predictionRF = predict(Cl.rf, testData, type = "class")
+
+#ConfusionMatrix
+confusionMatrix(predictionRF, testData$Bin)
+
+#rfmodel for balanced Bin
+BCl.rf <- randomForest(Bin~., data = new_trainS)
+
+#predict
+predictionRF = predict(BCl.rf, new_testS, type = "class")
+
+#ConfusionMatrix
+confusionMatrix(predictionRF, new_testS$Bin)
+
+#rfmodel for OverSampling Bin
+CCl.rf <- randomForest(Bin~., data = new_trainO)
+
+#predict
+CpredictionRF = predict(CCl.rf, new_testO, type = "class")
+
+#ConfusionMatrix
+confusionMatrix(CpredictionRF, new_testO$Bin)
+
+```
+ImBalanced vs balanced vs Oversampling
+-Accuracy - 0.9403 vs 0.9414 Vs 95.3
+-other interesting facts
+
+```{r}
+# Building the XGBOOST model
+#Imbalanced Data set
+library(caret)
+library(ModelMetrics)
+library(xgboost)
+set.seed(1337)
+# Create a training and validation sets
+trainObs <- sample(nrow(trainData), .8 * nrow(trainData), replace = FALSE)
+valObs <- sample(nrow(trainData), .2 * nrow(trainData), replace = FALSE)
+
+train_dat <- trainData[trainObs,]
+val_dat <- trainData[valObs,]
+
+# Create numeric labels with one-hot encoding
+train_labs <- as.numeric(train_dat$Bin) - 1
+val_labs <- as.numeric(val_dat$Bin) - 1
+
+new_trainX <- model.matrix(~ . + 0, data = train_dat[, -85])
+new_val <- model.matrix(~ . + 0, data = trainData[valObs, -85])
+
+# Prepare matrices
+xgb_train <- xgb.DMatrix(data = new_trainX, label = train_labs)
+xgb_val <- xgb.DMatrix(data = new_val, label = val_labs)
+
+# Set parameters(default)
+params <- list(booster = "gbtree", objective = "multi:softprob", num_class = 3, eval_metric = "mlogloss")
+
+# Calculate # of folds for cross-validation
+xgbcv <- xgb.cv(params = params, data = xgb_train, nrounds = 100, nfold = 5, showsd = TRUE, stratified = TRUE, print.every.n = 10, early_stop_round = 20, maximize = FALSE, prediction = TRUE)
+
+#Calculate classification error rate
+classification_error <- function(conf_mat) {
+  conf_mat = as.matrix(conf_mat)
+  
+  error = 1 - sum(diag(conf_mat)) / sum(conf_mat)
+  
+  return (error)
+}
+library(dplyr)
+# Mutate xgb output to deliver hard predictions
+xgb_train_preds <- data.frame(xgbcv$pred) %>% mutate(max = max.col(., ties.method = "last"), label = train_labs + 1)
+
+# Confustion Matrix
+xgb_conf_mat <- table(true = train_labs + 1, pred = xgb_train_preds$max)
+
+# Error 
+cat("XGB Training Classification Error Rate:", classification_error(xgb_conf_mat), "\n")
+
+#Confusion Matrix
+xgb_conf_mat_2 <- confusionMatrix(factor(xgb_train_preds$label),
+                                  factor(xgb_train_preds$max),
+                                  mode = "everything")
+
+xgb_conf_mat_2
+
+#Balanced Data set
+
+# Create a training and validation sets
+trainObs1 <- sample(nrow(new_trainS), .8 * nrow(new_trainS), replace = FALSE)
+valObs1 <- sample(nrow(new_trainS), .2 * nrow(new_trainS), replace = FALSE)
+
+train_dat1 <- new_trainS[trainObs1,]
+val_dat1 <- new_trainS[valObs1,]
+
+# Create numeric labels with one-hot encoding
+train_labs1 <- as.numeric(train_dat1$Bin) - 1
+val_labs1 <- as.numeric(val_dat1$Bin) - 1
+
+new_trainX1 <- model.matrix(~ . + 0, data = train_dat1[, -85])
+new_val1 <- model.matrix(~ . + 0, data = new_trainS[valObs1, -85])
+
+# Prepare matrices
+library(xgboost)
+xgb_train1 <- xgb.DMatrix(data = new_trainX1, label = train_labs1)
+xgb_val1 <- xgb.DMatrix(data = new_val1, label = val_labs1)
+
+# Set parameters(default)
+params1 <- list(booster = "gbtree", objective = "multi:softprob", num_class = 3, eval_metric = "mlogloss")
+
+# Calculate # of folds for cross-validation
+xgbcv1 <- xgb.cv(params = params1, data = xgb_train1, nrounds = 100, nfold = 5, showsd = TRUE, stratified = TRUE, print.every.n = 10, early_stop_round = 20, maximize = FALSE, prediction = TRUE)
+
+#Calculate classification error rate
+classification_error1 <- function(conf_mat1) {
+  conf_mat1 = as.matrix(conf_mat1)
+  
+  error1 = 1 - sum(diag(conf_mat1)) / sum(conf_mat1)
+  
+  return (error1)
+}
+
+# Mutate xgb output to deliver hard predictions
+xgb_train_preds1 <- data.frame(xgbcv1$pred) %>% mutate(max = max.col(., ties.method = "last"), label = train_labs1 + 1)
+
+# Confusion Matrix
+xgb_conf_mat1 <- table(true = train_labs1 + 1, pred = xgb_train_preds1$max)
+
+# Error 
+cat("XGB Training Classification Error Rate:", classification_error1(xgb_conf_mat1), "\n")
+
+#Confusion Matrix
+xgb_conf_mat_21 <- confusionMatrix(factor(xgb_train_preds1$label),
+                                  factor(xgb_train_preds1$max),
+                                  mode = "everything")
+
+xgb_conf_mat_21
+
+#Oversampling Data set
+
+# Create a training and validation sets
+trainObs2 <- sample(nrow(new_trainO), .8 * nrow(new_trainO), replace = FALSE)
+valObs2 <- sample(nrow(new_trainO), .2 * nrow(new_trainO), replace = FALSE)
+
+train_dat2 <- new_trainO[trainObs2,]
+val_dat2 <- new_trainO[valObs2,]
+
+# Create numeric labels with one-hot encoding
+train_labs2 <- as.numeric(train_dat2$Bin) - 1
+val_labs2 <- as.numeric(val_dat2$Bin) - 1
+
+new_trainX2 <- model.matrix(~ . + 0, data = train_dat2[, -85])
+new_val2 <- model.matrix(~ . + 0, data = new_trainO[valObs2, -85])
+
+# Prepare matrices
+library(xgboost)
+xgb_train2<- xgb.DMatrix(data = new_trainX2, label = train_labs2)
+xgb_val2 <- xgb.DMatrix(data = new_val2, label = val_labs2)
+
+# Set parameters(default)
+params2 <- list(booster = "gbtree", objective = "multi:softprob", num_class = 3, eval_metric = "mlogloss")
+
+# Calculate # of folds for cross-validation
+xgbcv2 <- xgb.cv(params = params2, data = xgb_train2, nrounds = 100, nfold = 5, showsd = TRUE, stratified = TRUE, print.every.n = 10, early_stop_round = 20, maximize = FALSE, prediction = TRUE)
+
+#Calculate classification error rate
+classification_error2 <- function(conf_mat2) {
+  conf_mat2 = as.matrix(conf_mat2)
+  
+  error2 = 1 - sum(diag(conf_mat2)) / sum(conf_mat2)
+  
+  return (error2)
+}
+
+# Mutate xgb output to deliver hard predictions
+xgb_train_preds2 <- data.frame(xgbcv2$pred) %>% mutate(max = max.col(., ties.method = "last"), label = train_labs2 + 1)
+
+# Confusion Matrix
+xgb_conf_mat2 <- table(true = train_labs2 + 1, pred = xgb_train_preds2$max)
+
+# Error 
+cat("XGB Training Classification Error Rate:", classification_error2(xgb_conf_mat2), "\n")
+
+#Confusion Matrix
+xgb_conf_mat_212 <- confusionMatrix(factor(xgb_train_preds2$label),
+                                  factor(xgb_train_preds2$max),
+                                  mode = "everything")
+
+xgb_conf_mat_212
+```
+
+Imbalanced vs Balanced
+-Error rate -0.0463  -0.0468 -0.012
+-accuracy .9479 .9532 .9872
+-Other interesting facts
+
+BasePaper's Dataset
+```{r}
+#Verify if not a fluke...
+
+#import data
+VerifyData = read.csv("GrowthData.csv",stringsAsFactors = TRUE)
+#descriptive statistics
+psych::describe(VerifyData[-c(1)])
+
+#remove index and target variable
+which(names(VerifyData) == "GDPpcGrowthMA")
+VerifyDataX = VerifyData[-c(1,59)]
+
+#check if there are any missing values
+sum(is.na(VerifyDataX))
+
+
+#structure
+str(VerifyDataX)
+
+#function to convert all factors to numeric
+asNumeric <- function(x) as.integer(x)
+factorsNumeric <- function(d) modifyList(d, lapply(d[, sapply(d, is.factor)], asNumeric))
+
+#call function
+VerifyDataX = factorsNumeric(VerifyDataX)
+
+set.seed(123)
+#choosing the optimal k for kmeans
+
+Verify_withinss <- function(k) {
+    Verifycluster <- kmeans(VerifyDataX, k)
+    return (Verifycluster$tot.withinss)
+}
+#maximum cluster of 15
+Vmax_k = 20
+
+#run kmeans over a range of 2 to 20 times
+wss <- sapply(2:Vmax_k, Verify_withinss)
+
+#create a data frame to plot the elbow graph
+VerifyElbow = data.frame(2:Vmax_k, wss)
+
+#Visualize the elbow
+ggplot(VerifyElbow, aes(x = X2.Vmax_k, y = wss)) +
+    geom_point() +
+    geom_line() +
+    scale_x_continuous(breaks = seq(1, 20, by = 1))
+```
+-k=5.
+```{r}
+#5 clusters for kmeans
+VerifyClusters = kmeans(VerifyDataX, 5)
+
+#evaluate the kmeans
+VerifyClusters$size
+
+#Check for the centre
+centres = VerifyClusters$centers
+
+#Clusters
+Cluster_1 = VerifyDataX[VerifyClusters$cluster==1,]
+Cluster_2 = VerifyDataX[VerifyClusters$cluster==2,]
+Cluster_3 = VerifyDataX[VerifyClusters$cluster==3,]
+Cluster_4 = VerifyDataX[VerifyClusters$cluster==4,]
+Cluster_5 = VerifyDataX[VerifyClusters$cluster==5,]
+
+#Visualize the clusters
+library("factoextra")
+fviz_cluster(VerifyClusters,VerifyDataX)
+```
+Diagram
+
+```{r}
+#Cluster_1
+library('caret')
+library('rsample')
+library('ranger')
+library('randomForest')
+set.seed(1337)
+
+
+#split data
+Data_split1 <- initial_split(Cluster_1, prop = .8)
+train1 <- training(Data_split1)
+test1 <- testing(Data_split1)
+
+#default randomforest model
+n1 <- randomForest(
+  formula = GDPpcGrowthMA ~ .,
+  data    = test1
+)
+plot(n1)
+#number of the trees with the least error rate
+which.min(n1$mse) #34
+
+#RMSE of this optimal random forest
+sqrt(n1$mse[which.min(n1$mse)])#1.25
+#prediction
+prediction1 <- predict(n1, test1)
+#Average of actual data
+avr_y_actual <- mean(test1$GDPpcGrowthMA)
+#Total sum of squares
+ss_total <- sum((test1$GDPpcGrowthMA - avr_y_actual)^2)
+#Regression sum of squares
+ss_regression <- sum((test1$GDPpcGrowthMA - avr_y_actual)^2)
+#Residual sum of squares
+ss_residuals <- sum((test1$GDPpcGrowthMA - prediction1)^2)
+#R2 Score
+r2 <- 1 - ss_residuals / ss_total
+r2
+
+#Cluster_2
+
+#split data
+Data_split2 <- initial_split(Cluster_2, prop = .7)
+train2 <- training(Data_split2)
+test2 <- testing(Data_split2)
+
+#default randomforest model
+n2 <- randomForest(formula = GDPpcGrowthMA ~ .,
+  data    = test2
+)
+plot(n2)
+#number of the trees with the least error rate
+which.min(n2$mse)
+
+#RMSE of this optimal random forest
+sqrt(n2$mse[which.min(n2$mse)])   #1.38
+#prediction
+prediction2 <- predict(n2, test2)
+#Average of actual data
+avr_y_actual <- mean(test2$GDPpcGrowthMA)
+#Total sum of squares
+ss_total <- sum((test2$GDPpcGrowthMA - avr_y_actual)^2)
+#Regression sum of squares
+ss_regression <- sum((test2$GDPpcGrowthMA - avr_y_actual)^2)
+#Residual sum of squares
+ss_residuals <- sum((test2$GDPpcGrowthMA - prediction2)^2)
+#R2 Score
+r2 <- 1 - ss_residuals / ss_total
+r2#96.4
+
+#Cluster_3
+
+#split data
+Data_split3 <- initial_split(Cluster_3, prop = .7)
+train3 <- training(Data_split3)
+test3 <- testing(Data_split3)
+
+#default randomforest model
+n3 <- randomForest(
+  formula = GDPpcGrowthMA ~ .,
+  data    = test3
+)
+plot(n3)
+#number of the trees with the least error rate
+which.min(n3$mse)
+
+#RMSE of this optimal random forest
+sqrt(n3$mse[which.min(n3$mse)])#2.21
+
+#prediction
+prediction3 <- predict(n3, test3)
+#Average of actual data
+avr_y_actual <- mean(test3$GDPpcGrowthMA)
+#Total sum of squares
+ss_total <- sum((test3$GDPpcGrowthMA - avr_y_actual)^2)
+#Regression sum of squares
+ss_regression <- sum((test3$GDPpcGrowthMA - avr_y_actual)^2)
+#Residual sum of squares
+ss_residuals <- sum((test3$GDPpcGrowthMA - prediction3)^2)
+#R2 Score
+r2 <- 1 - ss_residuals / ss_total
+r2#94.1
+#Cluster_4
+
+#split data
+Data_split4 <- initial_split(Cluster_4, prop = .7)
+train4 <- training(Data_split4)
+test4 <- testing(Data_split4)
+
+#default randomforest model
+n4 <- randomForest(formula = GDPpcGrowthMA ~ .,
+  data    = test4
+)
+plot(n4)
+#number of the trees with the least error rate
+which.min(n4$mse)
+
+#RMSE of this optimal random forest
+sqrt(n4$mse[which.min(n4$mse)])#1.38
+#prediction
+prediction4 <- predict(n4, test4)
+#Average of actual data
+avr_y_actual <- mean(test4$GDPpcGrowthMA)
+#Total sum of squares
+ss_total <- sum((test4$GDPpcGrowthMA - avr_y_actual)^2)
+#Regression sum of squares
+ss_regression <- sum((test4$GDPpcGrowthMA - avr_y_actual)^2)
+#Residual sum of squares
+ss_residuals <- sum((test4$GDPpcGrowthMA - prediction4)^2)
+#R2 Score
+r2 <- 1 - ss_residuals / ss_total
+r2 #93.1
+
+#Cluster_5
+#split data
+Data_split5 <- initial_split(Cluster_5, prop = .7)
+train5 <- training(Data_split5)
+test5<- testing(Data_split5)
+
+#default randomforest model
+n5 <- randomForest(
+  formula = GDPpcGrowthMA ~ .,
+  data    = test5
+)
+plot(n5)
+#number of the trees with the least error rate
+which.min(n5$mse)
+
+#RMSE of this optimal random forest
+sqrt(n5$mse[which.min(n5$mse)])#1.36
+#prediction
+prediction5 <- predict(n5, test5)
+#Average of actual data
+avr_y_actual <- mean(test5$GDPpcGrowthMA)
+#Total sum of squares
+ss_total <- sum((test5$GDPpcGrowthMA - avr_y_actual)^2)
+#Regression sum of squares
+ss_regression <- sum((test5$GDPpcGrowthMA - avr_y_actual)^2)
+#Residual sum of squares
+ss_residuals <- sum((test5$GDPpcGrowthMA - prediction5)^2)
+#R2 Score
+r2 <- 1 - ss_residuals / ss_total
+r2 #91.3%
+```
+test sample
+-RMSE - 2.16 -R2 - 0.94
+-RMSE - 1.25 -R2 - 0.96
+-RMSE - 1.36 -R2 - 0.94
+-RMSE - 1.59 -R2 - 0.96
+-RMSE - 1.17 -R2 - 0.88
